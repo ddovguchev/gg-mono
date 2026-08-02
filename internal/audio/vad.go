@@ -5,7 +5,7 @@ import "math"
 const (
 	// Energy threshold для определения речи.
 	// Тишина: ~0.001-0.01, речь: ~0.01-0.1+
-	silenceThreshold = 0.018
+	silenceThreshold = 0.015
 
 	// Сколько тишины подряд (в чанках) считать концом фразы.
 	// При 16kHz и 1024 samples/chunk, один чанк ≈ 64ms.
