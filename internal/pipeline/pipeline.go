@@ -339,6 +339,13 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 		log.Printf("[pipeline] whisper: empty")
 		return
 	}
+	// Фильтр галлюцинаций Whisper. На тихих/коротких отрезках модель
+	// выдаёт заученные фразы («Субтитры сделал DimaTorzok», «Thanks for
+	// watching» и т.п.). Такие куски — не речь пользователя, отбрасываем.
+	if isWhisperHallucination(text) {
+		log.Printf("[pipeline] whisper hallucination skipped: %q", text)
+		return
+	}
 	log.Printf("[pipeline] whisper [%s]: %q", srcCode, text)
 	p.sendText("transcribed", text)
 
@@ -423,6 +430,37 @@ func (p *Pipeline) emit(u StatusUpdate, important bool) {
 	default:
 		log.Printf("[pipeline] status DROPPED: stage=%s text=%q", u.Stage, u.Text)
 	}
+}
+
+// isWhisperHallucination отсекает известные фразы-призраки, которые Whisper
+// выдаёт на тихих/коротких отрезках аудио (документированные галлюцинации).
+func isWhisperHallucination(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if len([]rune(t)) < 3 {
+		return true // «да», «ну», «гм» и прочие обрывки — не фразы
+	}
+	known := []string{
+		// классика Whisper-галлюцинаций на тишине
+		"субтитры сделал",
+		"подписку оформил",
+		"подписчик",
+		"подписчики",
+		"спасибо за просмотр",
+		"продолжение следует",
+		"thanks for watching",
+		"please subscribe",
+		"subscribe to",
+		"here now",
+		"the weather is nice",
+		"your captions",
+		"субтитры",
+	}
+	for _, k := range known {
+		if strings.Contains(t, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func langCode(lang string) string {
