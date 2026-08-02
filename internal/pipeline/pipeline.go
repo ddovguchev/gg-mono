@@ -307,6 +307,14 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	wavData := audio.Float32ToWAV(phrase, 16000)
 	log.Printf("[pipeline] audio: %d bytes WAV → Whisper lang=%s (source=%q)", len(wavData), srcCode, p.cfg.SourceLang)
 
+	// DEBUG: сохраняем фразу для анализа качества распознавания.
+	os.MkdirAll("/tmp/phrases", 0755)
+	if f, ferr := os.Create(fmt.Sprintf("/tmp/phrases/phrase_%d.wav", time.Now().UnixNano())); ferr == nil {
+		f.Write(wavData)
+		f.Close()
+		log.Printf("[pipeline] saved phrase: /tmp/phrases/phrase_%d.wav", time.Now().UnixNano())
+	}
+
 	text, err := p.whisper.Transcribe(wavData, srcCode)
 	if err != nil {
 		log.Printf("[pipeline] whisper error: %v", err)
