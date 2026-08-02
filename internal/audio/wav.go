@@ -7,6 +7,35 @@ import (
 	"math"
 )
 
+// NormalizeFloat32 поднимает амплитуду samples так, чтобы peak ≈ 0.9.
+// Микрофон даёт тихий сигнал (RMS ~0.015) — Whisper на нём галлюцинирует.
+// Нормализация перед отправкой заметно повышает точность распознавания.
+func NormalizeFloat32(samples []float32) {
+	var peak float64
+	for _, s := range samples {
+		v := float64(s)
+		if v < 0 {
+			v = -v
+		}
+		if v > peak {
+			peak = v
+		}
+	}
+	if peak < 1e-6 {
+		return // тишина — не усиливаем шум
+	}
+	gain := float32(0.9 / peak)
+	for i := range samples {
+		v := samples[i] * gain
+		if v > 1 {
+			v = 1
+		} else if v < -1 {
+			v = -1
+		}
+		samples[i] = v
+	}
+}
+
 // Float32ToWAV конвертирует float32 mono samples в WAV-файл (16-bit PCM, 16kHz).
 func Float32ToWAV(samples []float32, sampleRate int) []byte {
 	// Конвертируем float32 → int16

@@ -305,6 +305,10 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 		srcCode = "ru" // голос пользователя — русский
 	}
 	p.sendStatus("transcribing", "Transcribing ("+srcCode+")...")
+	// Нормализуем амплитуду — тихий микрофонный сигнал (RMS ~0.015) заставляет
+	// Whisper галлюцинировать. После нормализации peak ≈ 0.9.
+	audio.NormalizeFloat32(phrase)
+
 	wavData := audio.Float32ToWAV(phrase, 16000)
 	// Диагностика: RMS и длительность фразы (без записи на диск).
 	{
