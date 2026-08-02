@@ -70,6 +70,13 @@ func (v *VAD) Flush() []float32 {
 	return v.collectPhrase()
 }
 
+// Reset сбрасывает состояние VAD, отбрасывая накопленные чанки.
+// Вызывается в момент старта/конца озвучки, чтобы эхо перевода
+// не попало в следующую фразу.
+func (v *VAD) Reset() {
+	v.reset()
+}
+
 func (v *VAD) collectPhrase() []float32 {
 	if len(v.phraseBuffer) < minPhraseChunks {
 		v.reset()

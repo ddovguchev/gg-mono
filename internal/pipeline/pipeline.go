@@ -59,6 +59,11 @@ type Pipeline struct {
 	running  bool
 	stopCh   chan struct{}
 	statusCh chan StatusUpdate
+
+	// wasPlaying — прошлое состояние плеера. Нужно, чтобы сбросить VAD
+	// в момент старта/конца озвучки и не дать эху перевода накопиться
+	// в фразу (это давало мусор вида «Субтитры сделал»).
+	wasPlaying bool
 }
 
 func New(cfg Config) *Pipeline {
@@ -275,11 +280,14 @@ func (p *Pipeline) processLoop() {
 		case <-p.stopCh:
 			return
 		case chunk := <-p.capturer.Channel():
-			// Во время воспроизведения перевода микрофон ловит звук колонок.
-			// Пропускаем эти чанки — иначе перевод будет распознаваться как
-			// речь пользователя («то что я не говорил»).
-			if p.player.IsPlaying() {
-				continue
+			// Капча всегда активна (асинхронно): пользователь может говорить,
+			// пока играет перевод. Чтобы эхо перевода из колонок не накопилось
+			// в фразу (и не выдало «Субтитры сделал»), сбрасываем VAD в момент
+			// старта и конца озвучки.
+			playing := p.player.IsPlaying()
+			if playing != p.wasPlaying {
+				p.vad.Reset()
+				p.wasPlaying = playing
 			}
 			phrase, speaking := p.vad.Process(chunk)
 			// Не спамим Listening на каждый чанк — иначе канал забивается
