@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -305,7 +306,23 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	}
 	p.sendStatus("transcribing", "Transcribing ("+srcCode+")...")
 	wavData := audio.Float32ToWAV(phrase, 16000)
-	log.Printf("[pipeline] audio: %d bytes WAV → Whisper lang=%s (source=%q)", len(wavData), srcCode, p.cfg.SourceLang)
+	// Диагностика: RMS и длительность фразы (без записи на диск).
+	{
+		var sum, peak float64
+		for _, s := range phrase {
+			v := float64(s)
+			sum += v * v
+			if v < 0 {
+				v = -v
+			}
+			if v > peak {
+				peak = v
+			}
+		}
+		rms := math.Sqrt(sum / float64(len(phrase)))
+		log.Printf("[pipeline] phrase: %.1fs, RMS=%.4f, peak=%.4f, %d bytes → Whisper lang=%s",
+			float64(len(phrase))/16000, rms, peak, len(wavData), srcCode)
+	}
 
 	text, err := p.whisper.Transcribe(wavData, srcCode)
 	if err != nil {
