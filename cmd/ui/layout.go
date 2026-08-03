@@ -135,6 +135,13 @@ func (a *App) renderControls(gtx layout.Context) layout.Dimensions {
 							return cb.Layout(gtx)
 						})
 					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Left: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							cb := material.CheckBox(a.th, &a.localWhisper, "🐍 Local Whisper")
+							cb.Color = accent
+							return cb.Layout(gtx)
+						})
+					}),
 				)
 			})
 		}),
@@ -148,7 +155,7 @@ func (a *App) renderStatus(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			statusRow(a.th, "Status", a.state.status, nil),
 			statusRow(a.th, "Server", a.cfg.ServerHost, a.configBtn),
-			statusRow(a.th, "Whisper", a.cfg.WhisperURL(), nil),
+			statusRow(a.th, "Whisper", a.whisperDisplayURL(), nil),
 			statusRow(a.th, "Ollama", a.cfg.OllamaModel, nil),
 			statusRow(a.th, "TTS", a.cfg.TTSEndpoint(), nil),
 		)

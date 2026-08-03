@@ -10,11 +10,13 @@ import (
 )
 
 // WhisperClient — клиент для Whisper ASR (speech-to-text).
-// Ожидает HTTP-сервер (faster-whisper-server / whisper.cpp + wrapper)
-// с endpoint POST /v1/audio/transcriptions (OpenAI-compatible).
+// По умолчанию использует OpenAI-compatible endpoint /v1/audio/transcriptions
+// (faster-whisper-server). Для локального whisper.cpp можно задать /inference —
+// формат запроса тот же (multipart file+language), ответ тоже {"text": ...}.
 type WhisperClient struct {
-	baseURL string
-	client  *http.Client
+	baseURL  string
+	endpoint string
+	client   *http.Client
 }
 
 type whisperReq struct {
@@ -29,9 +31,16 @@ type whisperResp struct {
 }
 
 func NewWhisperClient(baseURL string) *WhisperClient {
+	return NewWhisperClientEndpoint(baseURL, "/v1/audio/transcriptions")
+}
+
+// NewWhisperClientEndpoint создаёт клиент с произвольным endpoint
+// (например, "/inference" для локального whisper.cpp).
+func NewWhisperClientEndpoint(baseURL, endpoint string) *WhisperClient {
 	return &WhisperClient{
-		baseURL: baseURL,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		baseURL:  baseURL,
+		endpoint: endpoint,
+		client:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -57,7 +66,7 @@ func (w *WhisperClient) Transcribe(audioData []byte, language string) (string, e
 
 	body.WriteString("--" + boundary + "--\r\n")
 
-	req, err := http.NewRequest("POST", w.baseURL+"/v1/audio/transcriptions", body)
+	req, err := http.NewRequest("POST", w.baseURL+w.endpoint, body)
 	if err != nil {
 		return "", fmt.Errorf("whisper: create request: %w", err)
 	}

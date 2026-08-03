@@ -30,6 +30,7 @@ type Config struct {
 	TargetLang  string
 	SourceLang  string
 	VoiceEnabled bool // false — только субтитры, без озвучки
+	LocalWhisper bool // true — whisper.cpp на 127.0.0.1 (endpoint /inference)
 
 	// SSH-туннель. Если SSHHost непустой — сервисы доступны только
 	// через туннель (порты на сервере закрыты файрволом), поэтому
@@ -97,7 +98,13 @@ func (p *Pipeline) Start() error {
 	}
 
 	// Клиенты — подключение к сервисам
-	p.whisper = services.NewWhisperClient(p.cfg.WhisperURL)
+	// Локальный whisper.cpp использует /inference; удалённый (faster-whisper)
+	// — OpenAI-compatible /v1/audio/transcriptions.
+	endpoint := "/v1/audio/transcriptions"
+	if p.cfg.LocalWhisper {
+		endpoint = "/inference"
+	}
+	p.whisper = services.NewWhisperClientEndpoint(p.cfg.WhisperURL, endpoint)
 	p.ollama = services.NewOllamaClient(p.cfg.OllamaURL, p.cfg.OllamaModel)
 	p.tts = services.NewTTSClient(p.cfg.TTSEndpoint, p.cfg.TTSModel)
 

@@ -31,6 +31,7 @@ type App struct {
 	langDrop  *dropdown
 	txList    widget.List
 	voiceBtn  widget.Bool // 🔊 Voice — проигрывать перевод голосом
+	localWhisper widget.Bool // 🐍 Local Whisper — whisper.cpp на Mac
 
 	serverEdit   widget.Editor
 	ollamaEdit   widget.Editor
@@ -94,8 +95,18 @@ func newApp(th *material.Theme) *App {
 	setSingleLine(&a.ollamaEdit, cfg.OllamaModel)
 	setSingleLine(&a.ttsModelEdit, cfg.TTSModel)
 	a.voiceBtn.Value = cfg.VoiceEnabled
+	// Локальный Whisper включён по умолчанию: whisper.cpp на 127.0.0.1:8080.
+	a.localWhisper.Value = true
 
 	return a
+}
+
+// whisperDisplayURL — актуальный адрес Whisper с учётом локального режима.
+func (a *App) whisperDisplayURL() string {
+	if a.localWhisper.Value {
+		return "127.0.0.1:8080 (local)"
+	}
+	return a.cfg.WhisperURL()
 }
 
 func setSingleLine(ed *widget.Editor, text string) {
@@ -222,8 +233,15 @@ func (a *App) toggleRecording() {
 		lang = a.state.langDevices[a.state.selectedLang]
 	}
 
+	// Локальный whisper.cpp (whisper-server на 127.0.0.1:8080) — туннель
+	// его не трогает (isLocalURL). Остальные сервисы — через туннель.
+	whisperURL := a.cfg.WhisperURL()
+	if a.localWhisper.Value {
+		whisperURL = "http://127.0.0.1:8080"
+	}
+
 	cfg := pipeline.Config{
-		WhisperURL:  a.cfg.WhisperURL(),
+		WhisperURL:  whisperURL,
 		OllamaURL:   a.cfg.OllamaURL(),
 		OllamaModel: a.cfg.OllamaModel,
 		TTSEndpoint: a.cfg.TTSEndpoint(),
@@ -233,6 +251,7 @@ func (a *App) toggleRecording() {
 		TargetLang:  lang,
 		SourceLang:  a.cfg.SourceLang,
 		VoiceEnabled: a.voiceBtn.Value,
+		LocalWhisper: a.localWhisper.Value,
 
 		// Сервисы на сервере закрыты файрволом → доступ только через SSH-туннель.
 		SSHHost:    a.cfg.ServerHost,
