@@ -58,23 +58,34 @@ func (o *OllamaClient) Understand(text, targetLang string) (string, error) {
 
 // UnderstandFrom переводит с исходного языка на целевой.
 func (o *OllamaClient) UnderstandFrom(text, sourceLang, targetLang string) (string, error) {
+	return o.UnderstandFromContext(text, "", sourceLang, targetLang)
+}
+
+// UnderstandFromContext переводит фразу с учётом контекста недавнего диалога.
+// Контекст (исходные фразы) помогает LLM правильно разрешать местоимения и
+// сохранять тему — без него каждая фраза переводится изолированно.
+func (o *OllamaClient) UnderstandFromContext(text, context, sourceLang, targetLang string) (string, error) {
 	if sourceLang == "" {
 		sourceLang = "Russian"
 	}
 	if targetLang == "" {
 		targetLang = "English"
 	}
+	contextBlock := ""
+	if strings.TrimSpace(context) != "" {
+		contextBlock = "\nRecent conversation (in " + sourceLang + "):\n" + strings.TrimSpace(context) + "\n"
+	}
 	prompt := fmt.Sprintf(`You are a real-time speech translator.
-Translate FROM %s TO %s.
-
+Translate FROM %s TO %s.%s
 STRICT RULES:
 - The input is spoken %s. Keep the meaning, fix ASR typos.
+- Use the recent conversation as context to disambiguate pronouns and topic.
 - Output ONLY the %s translation. Nothing else.
 - NO labels, NO "Translation:", NO quotes, NO explanations.
 - Do NOT output %s. Do NOT repeat the original.
 
 Input (%s):
-%s`, sourceLang, targetLang, sourceLang, targetLang, sourceLang, sourceLang, text)
+%s`, sourceLang, targetLang, contextBlock, sourceLang, targetLang, sourceLang, sourceLang, text)
 
 	payload := ollamaGenerateReq{
 		Model:     o.model,

@@ -61,6 +61,12 @@ type Pipeline struct {
 	stopCh   chan struct{}
 	statusCh chan StatusUpdate
 	phraseCh chan []float32 // фразы на обработку (последовательно)
+
+	// Контекст для перевода: последние распознанные фразы пользователя.
+	// Передаются в Ollama, чтобы перевод учитывал предыдущие высказывания
+	// (местоимения, тему) — иначе каждая фраза переводится изолированно.
+	ctxMu        sync.Mutex
+	recentSource []string
 }
 
 func New(cfg Config) *Pipeline {
@@ -372,9 +378,11 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	log.Printf("[pipeline] whisper [%s]: %q", srcCode, text)
 	p.sendText("transcribed", text)
 
-	// 2. Ollama: перевод source → target (русский → English)
+	// 2. Ollama: перевод source → target (русский → English) с контекстом.
+	// Последние фразы пользователя дают модели память о теме и местоимениях.
 	p.sendStatus("translating", "Translating...")
-	translated, err := p.ollama.UnderstandFrom(text, p.cfg.SourceLang, p.cfg.TargetLang)
+	context := p.buildTranslationContext()
+	translated, err := p.ollama.UnderstandFromContext(text, context, p.cfg.SourceLang, p.cfg.TargetLang)
 	if err != nil {
 		log.Printf("[pipeline] ollama error: %v", err)
 		p.sendStatus("error", "Ollama: "+err.Error())
@@ -382,6 +390,9 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	}
 	log.Printf("[pipeline] translated: %q", translated)
 	p.sendText("translated", translated)
+
+	// Добавляем фразу в контекст для следующих переводов.
+	p.pushContext(text)
 
 	// Озвучка опциональна: пока она выключена, работаем только с субтитрами
 	// (распознавание + перевод), чтобы не бороться с эхом из колонок.
@@ -488,6 +499,34 @@ func isWhisperHallucination(text string) bool {
 		}
 	}
 	return false
+}
+
+// buildTranslationContext собирает последние распознанные фразы в строку
+// контекста для промпта перевода.
+func (p *Pipeline) buildTranslationContext() string {
+	p.ctxMu.Lock()
+	defer p.ctxMu.Unlock()
+	if len(p.recentSource) == 0 {
+		return ""
+	}
+	// Показываем все, кроме самой свежей (она и переводится сейчас).
+	lines := p.recentSource[:len(p.recentSource)-1]
+	out := make([]string, 0, len(lines))
+	for _, s := range lines {
+		out = append(out, "- "+s)
+	}
+	return strings.Join(out, "\n")
+}
+
+// pushContext запоминает распознанную фразу для следующих переводов.
+// Окно ограничено (5 фраз), чтобы промпт не разрастался.
+func (p *Pipeline) pushContext(text string) {
+	p.ctxMu.Lock()
+	defer p.ctxMu.Unlock()
+	p.recentSource = append(p.recentSource, text)
+	if len(p.recentSource) > 5 {
+		p.recentSource = p.recentSource[len(p.recentSource)-5:]
+	}
 }
 
 func langCode(lang string) string {
