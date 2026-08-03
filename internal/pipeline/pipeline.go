@@ -53,6 +53,21 @@ type StatusUpdate struct {
 	Text    string
 }
 
+// phraseTask — фраза с порядковым номером. Номер нужен, чтобы параллельные
+// воркеры переводили фразы одновременно, но результат выдавался по порядку.
+type phraseTask struct {
+	seq    int
+	phrase []float32
+}
+
+// phraseResult — результат обработки одной фразы.
+type phraseResult struct {
+	seq         int
+	transcribed string
+	translated  string
+	ok          bool // false — фраза отброшена (пусто/галлюцинация/ошибка)
+}
+
 type Pipeline struct {
 	cfg      Config
 	capturer *audio.Capturer
@@ -68,7 +83,12 @@ type Pipeline struct {
 	running  bool
 	stopCh   chan struct{}
 	statusCh chan StatusUpdate
-	phraseCh chan []float32 // фразы на обработку (последовательно)
+
+	// Асинхронная обработка: воркеры переводят фразы параллельно, reorderer
+	// выдаёт их в текст по порядку (seq). nextSeq инкрементит только processLoop.
+	phraseCh  chan phraseTask
+	resultsCh chan phraseResult
+	nextSeq   int
 
 	// Контекст для перевода: последние распознанные фразы пользователя.
 	// Передаются в Ollama, чтобы перевод учитывал предыдущие высказывания
@@ -175,8 +195,26 @@ func (p *Pipeline) Start() error {
 	}
 
 	p.running = true
-	p.phraseCh = make(chan []float32, 16)
-	go p.phraseWorker()
+	p.phraseCh = make(chan phraseTask, 32)
+	p.resultsCh = make(chan phraseResult, 32)
+	p.nextSeq = 0
+
+	// Параллельные воркеры: Whisper+Ollama идут одновременно для всех фраз.
+	const workers = 3
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.phraseWorker()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(p.resultsCh)
+	}()
+	go p.reorderer()
+
 	go p.processLoop()
 	ttsInfo := p.cfg.TTSEndpoint
 	if p.fish != nil {
@@ -186,11 +224,44 @@ func (p *Pipeline) Start() error {
 	return nil
 }
 
-// phraseWorker обрабатывает фразы строго по очереди — иначе параллельные
-// goroutine переставляли переводы местами («перевод начинается с конца»).
+// phraseWorker обрабатывает фразы из очереди: каждая переводится
+// независимо (асинхронно), результат уходит в resultsCh.
 func (p *Pipeline) phraseWorker() {
-	for phrase := range p.phraseCh {
-		p.processPhrase(phrase)
+	for task := range p.phraseCh {
+		p.resultsCh <- p.workPhrase(task)
+	}
+}
+
+// reorderer принимает результаты параллельных воркеров и выдаёт их в текст
+// строго по порядку seq. Без этого переводы приходили бы вперемешку.
+func (p *Pipeline) reorderer() {
+	next := 0
+	pending := make(map[int]phraseResult)
+	for res := range p.resultsCh {
+		pending[res.seq] = res
+		for {
+			r, ok := pending[next]
+			if !ok {
+				break
+			}
+			delete(pending, next)
+			p.emitOrdered(r)
+			next++
+		}
+	}
+}
+
+// emitOrdered публикует результат фразы в правильном порядке.
+func (p *Pipeline) emitOrdered(r phraseResult) {
+	if !r.ok {
+		return // фраза отброшена (пусто/галлюцинация/ошибка) — просто пропускаем
+	}
+	p.sendText("transcribed", r.transcribed)
+	p.sendText("translated", r.translated)
+	p.pushContext(r.transcribed)
+
+	if p.cfg.VoiceEnabled {
+		p.synthesizeAndPlay(r.translated)
 	}
 }
 
@@ -207,7 +278,8 @@ func (p *Pipeline) Stop() {
 
 	if phrase := p.vad.Flush(); len(phrase) > 0 {
 		select {
-		case p.phraseCh <- phrase:
+		case p.phraseCh <- phraseTask{seq: p.nextSeq, phrase: phrase}:
+			p.nextSeq++
 		default:
 		}
 	}
@@ -360,10 +432,13 @@ func (p *Pipeline) processLoop() {
 			}
 			if phrase != nil {
 				log.Printf("[pipeline] phrase ready: %d samples (%.1fs)", len(phrase), float64(len(phrase))/16000)
-				// Неблокирующая отправка в worker; при переполнении очередь
-				// уже занята — фразу пропускаем (лучше, чем блокировать капчу).
+				// Неблокирующая отправка в воркеры; при переполнении очереди
+				// фразу пропускаем (лучше, чем блокировать капчу). nextSeq
+				// увеличиваем только при успехе — иначе в seq была бы дыра,
+				// и reorderer застрял бы, ожидая пропущенный номер.
 				select {
-				case p.phraseCh <- phrase:
+				case p.phraseCh <- phraseTask{seq: p.nextSeq, phrase: phrase}:
+					p.nextSeq++
 				default:
 					log.Printf("[pipeline] phrase queue full, dropping %d samples", len(phrase))
 				}
@@ -372,7 +447,11 @@ func (p *Pipeline) processLoop() {
 	}
 }
 
-func (p *Pipeline) processPhrase(phrase []float32) {
+// workPhrase — распознавание + перевод одной фразы. Вызывается из воркеров
+// параллельно. НЕ публикует текст в UI — это делает reorderer по порядку.
+func (p *Pipeline) workPhrase(task phraseTask) phraseResult {
+	res := phraseResult{seq: task.seq}
+	phrase := task.phrase
 	start := time.Now()
 
 	// 1. Whisper: аудио → текст (source language, e.g. Russian → ru)
@@ -408,25 +487,23 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	if err != nil {
 		log.Printf("[pipeline] whisper error: %v", err)
 		p.sendStatus("error", "Whisper: "+err.Error())
-		return
+		return res
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		log.Printf("[pipeline] whisper: empty")
-		return
+		return res
 	}
 	// Фильтр галлюцинаций Whisper. На тихих/коротких отрезках модель
 	// выдаёт заученные фразы («Субтитры сделал DimaTorzok», «Thanks for
 	// watching» и т.п.). Такие куски — не речь пользователя, отбрасываем.
 	if isWhisperHallucination(text) {
 		log.Printf("[pipeline] whisper hallucination skipped: %q", text)
-		return
+		return res
 	}
 	log.Printf("[pipeline] whisper [%s]: %q", srcCode, text)
-	p.sendText("transcribed", text)
 
 	// 2. Ollama: перевод source → target (русский → English) с контекстом.
-	// Последние фразы пользователя дают модели память о теме и местоимениях.
 	p.sendStatus("translating", "Translating...")
 	context := p.buildTranslationContext()
 	translated, err := p.ollama.UnderstandFromContext(text, context, p.cfg.SourceLang, p.cfg.TargetLang)
@@ -436,40 +513,39 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 		translated = text
 	}
 	log.Printf("[pipeline] translated: %q", translated)
-	p.sendText("translated", translated)
 
-	// Добавляем фразу в контекст для следующих переводов.
-	p.pushContext(text)
-
-	// Озвучка опциональна: пока она выключена, работаем только с субтитрами
-	// (распознавание + перевод), чтобы не бороться с эхом из колонок.
-	if p.cfg.VoiceEnabled {
-		p.sendStatus("synthesizing", "Synthesizing voice...")
-		var audioData []byte
-		if p.fish != nil {
-			audioData, _, err = p.fish.SynthesizeWithVoice(translated, p.cfg.FishVoiceID)
-		} else if p.tts != nil {
-			audioData, err = p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
-		} else {
-			err = fmt.Errorf("нет TTS-клиента (выбери голос или F5)")
-		}
-		if err != nil {
-			log.Printf("[pipeline] tts error: %v", err)
-			p.sendStatus("error", "TTS: "+err.Error())
-			return
-		}
-		log.Printf("[pipeline] tts: %d bytes audio", len(audioData))
-
-		p.sendStatus("playing", "Playing...")
-		if err := p.playAudio(audioData); err != nil {
-			log.Printf("[pipeline] playback error: %v", err)
-			p.sendStatus("error", "Playback: "+err.Error())
-			return
-		}
-	}
-
+	res.ok = true
+	res.transcribed = text
+	res.translated = translated
 	elapsed := time.Since(start)
-	log.Printf("[pipeline] done in %v", elapsed.Round(time.Millisecond))
+	log.Printf("[pipeline] phrase %d done in %v", task.seq, elapsed.Round(time.Millisecond))
+	return res
+}
+
+// synthesizeAndPlay — озвучка перевода. Вызывается из emitOrdered (последовательно).
+func (p *Pipeline) synthesizeAndPlay(translated string) {
+	p.sendStatus("synthesizing", "Synthesizing voice...")
+	var audioData []byte
+	var err error
+	if p.fish != nil {
+		audioData, _, err = p.fish.SynthesizeWithVoice(translated, p.cfg.FishVoiceID)
+	} else if p.tts != nil {
+		audioData, err = p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
+	} else {
+		err = fmt.Errorf("нет TTS-клиента (выбери голос или F5)")
+	}
+	if err != nil {
+		log.Printf("[pipeline] tts error: %v", err)
+		p.sendStatus("error", "TTS: "+err.Error())
+		return
+	}
+	log.Printf("[pipeline] tts: %d bytes audio", len(audioData))
+
+	p.sendStatus("playing", "Playing...")
+	if err := p.playAudio(audioData); err != nil {
+		log.Printf("[pipeline] playback error: %v", err)
+		p.sendStatus("error", "Playback: "+err.Error())
+	}
 }
 
 func (p *Pipeline) playAudio(data []byte) error {
