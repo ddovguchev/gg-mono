@@ -110,7 +110,42 @@ Input (%s):
 		return "", fmt.Errorf("ollama: decode: %w", err)
 	}
 
-	return strings.TrimSpace(result.Response), nil
+	return cleanTranslation(result.Response), nil
+}
+
+// cleanTranslation убирает мета-комментарии, которые llama может добавить
+// к переводу («Here is the translation:», «Translation:» и т.п.).
+func cleanTranslation(s string) string {
+	s = strings.TrimSpace(s)
+	lines := strings.Split(s, "\n")
+
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		trimmed := strings.Trim(lower, `":.'`)
+
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "here is") ||
+			strings.HasPrefix(trimmed, "translation:") ||
+			strings.HasPrefix(trimmed, "the translation is") ||
+			strings.HasPrefix(trimmed, "the text is") ||
+			strings.HasPrefix(trimmed, "translating") ||
+			strings.HasPrefix(trimmed, "in english") ||
+			strings.HasPrefix(trimmed, "the user said") ||
+			strings.HasPrefix(trimmed, "input:") ||
+			strings.HasPrefix(trimmed, "note:") {
+			continue
+		}
+		out = append(out, line)
+	}
+
+	res := strings.Join(out, " ")
+	res = strings.Trim(res, `"'`)
+	res = strings.TrimSpace(res)
+	return res
 }
 
 // HealthCheck проверяет доступность Ollama и наличие загруженных моделей.
