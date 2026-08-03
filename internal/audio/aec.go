@@ -153,6 +153,12 @@ func (e *EchoCanceller) Cancel(mic []float32) []float32 {
 		}
 		est := gain*ref[ri] + rev
 		err := mic[i] - est
+		// Защита от NaN/inf: иначе Whisper получает испорченное аудио.
+		if err != err || err > 1 {
+			err = 1
+		} else if err < -1 {
+			err = -1
+		}
 		out[i] = err
 
 		// Адаптация NLMS с double-talk. В фазе learn — всегда.
@@ -167,7 +173,7 @@ func (e *EchoCanceller) Cancel(mic []float32) []float32 {
 		if e.learn > 0 {
 			e.learn--
 		}
-		if energy > 1e-4 && (e.learn > 0 || micAbs < 4*estAbs+0.05) {
+		if energy > 1e-4 && energy < 1e6 && (e.learn > 0 || micAbs < 4*estAbs+0.05) {
 			step := float32(0.1)
 			if e.learn <= 0 {
 				step = 0.02

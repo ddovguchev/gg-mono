@@ -59,6 +59,7 @@ type Pipeline struct {
 	running  bool
 	stopCh   chan struct{}
 	statusCh chan StatusUpdate
+	phraseCh chan []float32 // фразы на обработку (последовательно)
 }
 
 func New(cfg Config) *Pipeline {
@@ -130,9 +131,19 @@ func (p *Pipeline) Start() error {
 	}
 
 	p.running = true
+	p.phraseCh = make(chan []float32, 16)
+	go p.phraseWorker()
 	go p.processLoop()
 	log.Printf("[pipeline] started — whisper=%s ollama=%s tts=%s", p.cfg.WhisperURL, p.cfg.OllamaURL, p.cfg.TTSEndpoint)
 	return nil
+}
+
+// phraseWorker обрабатывает фразы строго по очереди — иначе параллельные
+// goroutine переставляли переводы местами («перевод начинается с конца»).
+func (p *Pipeline) phraseWorker() {
+	for phrase := range p.phraseCh {
+		p.processPhrase(phrase)
+	}
 }
 
 func (p *Pipeline) Stop() {
@@ -147,7 +158,14 @@ func (p *Pipeline) Stop() {
 	p.running = false
 
 	if phrase := p.vad.Flush(); len(phrase) > 0 {
-		go p.processPhrase(phrase)
+		select {
+		case p.phraseCh <- phrase:
+		default:
+		}
+	}
+	if p.phraseCh != nil {
+		close(p.phraseCh)
+		p.phraseCh = nil
 	}
 
 	if p.capturer != nil {
@@ -288,7 +306,13 @@ func (p *Pipeline) processLoop() {
 			}
 			if phrase != nil {
 				log.Printf("[pipeline] phrase ready: %d samples (%.1fs)", len(phrase), float64(len(phrase))/16000)
-				go p.processPhrase(phrase)
+				// Неблокирующая отправка в worker; при переполнении очередь
+				// уже занята — фразу пропускаем (лучше, чем блокировать капчу).
+				select {
+				case p.phraseCh <- phrase:
+				default:
+					log.Printf("[pipeline] phrase queue full, dropping %d samples", len(phrase))
+				}
 			}
 		}
 	}
