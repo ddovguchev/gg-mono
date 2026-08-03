@@ -23,10 +23,16 @@ type Player struct {
 	deviceName string
 	mu         sync.Mutex
 	running    bool
-	// playing — идёт ли сейчас воспроизведение. Пайплайн пропускает капчу
-	// микрофона во время воспроизведения, чтобы не распознавать собственный
-	// перевод (петля: колонки → микрофон → снова транскрипция).
+	// playing — идёт ли сейчас воспроизведение перевода.
 	playing atomic.Bool
+	// aec — компенсатор эха: плеер сообщает, что именно играет, чтобы
+	// пайплайн мог вычесть эхо из микрофонного сигнала.
+	aec *EchoCanceller
+}
+
+// AEC возвращает компенсатор эха плеера (для пайплайна).
+func (p *Player) AEC() *EchoCanceller {
+	return p.aec
 }
 
 // NewPlayer создаёт плеер для вывода аудио на указанное устройство.
@@ -94,6 +100,7 @@ func NewPlayer(deviceName string) (*Player, error) {
 		stream:     stream,
 		buf:        buf,
 		deviceName: outputDevice.Name,
+		aec:        NewEchoCanceller(),
 	}, nil
 }
 
@@ -155,6 +162,11 @@ func (p *Player) writeSamples(samples []float32) error {
 				continue
 			}
 			return err
+		}
+
+		// Подаём сыгранное в компенсатор эха (референс на 16 кГц — как капча).
+		if p.aec != nil {
+			p.aec.AddReference(ResampleFloat32(p.buf[:n], playerSampleRate, 16000))
 		}
 	}
 	return nil
