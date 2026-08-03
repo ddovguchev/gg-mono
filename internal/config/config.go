@@ -23,6 +23,14 @@ type Settings struct {
 	// Отключено — только субтитры: распознавание + перевод.
 	VoiceEnabled bool `json:"voice_enabled"`
 
+	// Локальный Fish Speech на AI-хосте (не облако).
+	FishBaseURL    string `json:"fish_base_url"`    // обычно туннель http://127.0.0.1:18080
+	FishAPIKey     string `json:"fish_api_key"`     // опционально, локально не нужен
+	FishVoiceID    string `json:"fish_voice_id"`
+	FishRefsRemote string `json:"fish_refs_remote"` // /ai-volume/fish-speech/references
+	FishRemotePort string `json:"fish_remote_port"` // 8080 на AI-хосте
+	FishLocalPort  string `json:"fish_local_port"`  // локальный порт туннеля
+
 	// SSH-туннель к серверу. Если SSHUser пустой — прямое подключение.
 	SSHUser    string `json:"ssh_user"`
 	SSHPort    int    `json:"ssh_port"`
@@ -30,19 +38,23 @@ type Settings struct {
 }
 
 var defaults = Settings{
-	ServerHost:  "10.0.0.26",
-	WhisperPort: "8000",
-	OllamaPort:  "11434",
-	TTSPort:     "5002",
-	OllamaModel: "llama3",
-	TTSModel:    "f5-tts",
-	SourceLang:  "Russian",
-	TargetLang:  "English",
-	MicDevice:   "default",
-	VirtualMic:  "default",
-	VoiceEnabled: false, // озвучка выключена по умолчанию — только субтитры
-	SSHUser:     "dd",
-	SSHPort:     22,
+	ServerHost:     "10.0.0.26",
+	WhisperPort:    "8000",
+	OllamaPort:     "11434",
+	TTSPort:        "5002",
+	OllamaModel:    "llama3",
+	TTSModel:       "f5-tts",
+	SourceLang:     "Russian",
+	TargetLang:     "English",
+	MicDevice:      "default",
+	VirtualMic:     "default",
+	VoiceEnabled:   false, // озвучка выключена по умолчанию — только субтитры
+	FishBaseURL:    "http://127.0.0.1:18080",
+	FishRefsRemote: "/ai-volume/fish-speech/references",
+	FishRemotePort: "8080",
+	FishLocalPort:  "18080",
+	SSHUser:        "dd",
+	SSHPort:        22,
 }
 
 func (s *Settings) WhisperURL() string  { return "http://" + s.ServerHost + ":" + s.WhisperPort }
@@ -65,20 +77,45 @@ func Load() (*Settings, error) {
 	s := defaults
 	dir, err := configDir()
 	if err != nil {
-		return &s, nil
+		return applyEnv(&s), nil
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &s, nil
+			return applyEnv(&s), nil
 		}
-		return &s, err
+		return applyEnv(&s), err
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		log.Printf("[config] ignoring invalid config.json: %v (using defaults)", err)
 		s = defaults
 	}
-	return &s, nil
+	return applyEnv(&s), nil
+}
+
+func applyEnv(s *Settings) *Settings {
+	if s.FishBaseURL == "" || s.FishBaseURL == "https://api.fish.audio" {
+		s.FishBaseURL = defaults.FishBaseURL
+	}
+	if s.FishRefsRemote == "" {
+		s.FishRefsRemote = defaults.FishRefsRemote
+	}
+	if s.FishRemotePort == "" {
+		s.FishRemotePort = defaults.FishRemotePort
+	}
+	if s.FishLocalPort == "" {
+		s.FishLocalPort = defaults.FishLocalPort
+	}
+	if v := os.Getenv("FISH_API_KEY"); v != "" {
+		s.FishAPIKey = v
+	}
+	if v := os.Getenv("FISH_BASE_URL"); v != "" {
+		s.FishBaseURL = v
+	}
+	if v := os.Getenv("FISH_REFS_REMOTE"); v != "" {
+		s.FishRefsRemote = v
+	}
+	return s
 }
 
 func Save(s *Settings) error {

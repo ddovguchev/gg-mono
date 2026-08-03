@@ -33,6 +33,21 @@ func newDropdown(label string, options []string, selected *int) *dropdown {
 	}
 }
 
+func (d *dropdown) setOptions(options []string) {
+	d.options = options
+	d.items = make([]widget.Clickable, len(options))
+	if d.selected == nil {
+		return
+	}
+	if len(options) == 0 {
+		*d.selected = 0
+		return
+	}
+	if *d.selected < 0 || *d.selected >= len(options) {
+		*d.selected = 0
+	}
+}
+
 func (d *dropdown) value() string {
 	if d.selected == nil || len(d.options) == 0 {
 		return ""

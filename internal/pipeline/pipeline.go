@@ -31,6 +31,12 @@ type Config struct {
 	SourceLang  string
 	VoiceEnabled bool // false — только субтитры, без озвучки
 
+	// Fish Speech (клон голоса). Если FishVoiceID задан — TTS идёт через Fish,
+	// а не через F5. FishBaseURL обычно локальный туннель 127.0.0.1:18080.
+	FishBaseURL string
+	FishAPIKey  string
+	FishVoiceID string
+
 	// SSH-туннель. Если SSHHost непустой — сервисы доступны только
 	// через туннель (порты на сервере закрыты файрволом), поэтому
 	// URL переписываются на 127.0.0.1:порт.
@@ -54,6 +60,7 @@ type Pipeline struct {
 	whisper  *services.WhisperClient
 	ollama   *services.OllamaClient
 	tts      *services.TTSClient
+	fish     *services.FishClient
 	tunnel   *tunnel.SSHTunnel
 
 	mu       sync.Mutex
@@ -99,7 +106,30 @@ func (p *Pipeline) Start() error {
 	// Клиенты — подключение к сервисам
 	p.whisper = services.NewWhisperClient(p.cfg.WhisperURL)
 	p.ollama = services.NewOllamaClient(p.cfg.OllamaURL, p.cfg.OllamaModel)
-	p.tts = services.NewTTSClient(p.cfg.TTSEndpoint, p.cfg.TTSModel)
+	if p.cfg.VoiceEnabled {
+		if strings.TrimSpace(p.cfg.FishVoiceID) != "" {
+			p.fish = services.NewFishClientCfg(services.FishClientConfig{
+				BaseURL: p.cfg.FishBaseURL,
+				APIKey:  p.cfg.FishAPIKey,
+				VoiceID: p.cfg.FishVoiceID,
+				SSHUser: p.cfg.SSHUser,
+				SSHHost: p.cfg.SSHHost,
+			})
+			p.tts = nil
+		} else {
+			p.tts = services.NewTTSClient(p.cfg.TTSEndpoint, p.cfg.TTSModel)
+			p.fish = nil
+		}
+	}
+
+	if !p.whisper.HealthCheck() {
+		msg := fmt.Sprintf("Whisper недоступен на %s (проверь SSH-туннель / сервис)", p.cfg.WhisperURL)
+		log.Printf("[pipeline] %s", msg)
+		p.sendStatus("error", msg)
+		p.closeTunnel()
+		return fmt.Errorf("%s", msg)
+	}
+	log.Printf("[pipeline] whisper OK at %s", p.cfg.WhisperURL)
 
 	// Микрофон
 	p.sendStatus("init", "Opening microphone...")
@@ -141,7 +171,11 @@ func (p *Pipeline) Start() error {
 	p.phraseCh = make(chan []float32, 16)
 	go p.phraseWorker()
 	go p.processLoop()
-	log.Printf("[pipeline] started — whisper=%s ollama=%s tts=%s", p.cfg.WhisperURL, p.cfg.OllamaURL, p.cfg.TTSEndpoint)
+	ttsInfo := p.cfg.TTSEndpoint
+	if p.fish != nil {
+		ttsInfo = fmt.Sprintf("fish:%s (%s)", p.cfg.FishVoiceID, p.cfg.FishBaseURL)
+	}
+	log.Printf("[pipeline] started — whisper=%s ollama=%s tts=%s", p.cfg.WhisperURL, p.cfg.OllamaURL, ttsInfo)
 	return nil
 }
 
@@ -227,7 +261,13 @@ func (p *Pipeline) openTunnel() error {
 	keyPath := p.cfg.SSHKeyPath
 	if keyPath == "" {
 		if home, err := os.UserHomeDir(); err == nil {
-			keyPath = filepath.Join(home, ".ssh", "id_ed25519")
+			for _, name := range []string{"id_ed25519", "id_rsa"} {
+				candidate := filepath.Join(home, ".ssh", name)
+				if _, err := os.Stat(candidate); err == nil {
+					keyPath = candidate
+					break
+				}
+			}
 		}
 	}
 
@@ -397,9 +437,15 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	// Озвучка опциональна: пока она выключена, работаем только с субтитрами
 	// (распознавание + перевод), чтобы не бороться с эхом из колонок.
 	if p.cfg.VoiceEnabled {
-		// 3. TTS: текст → аудио
 		p.sendStatus("synthesizing", "Synthesizing voice...")
-		audioData, err := p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
+		var audioData []byte
+		if p.fish != nil {
+			audioData, _, err = p.fish.SynthesizeWithVoice(translated, p.cfg.FishVoiceID)
+		} else if p.tts != nil {
+			audioData, err = p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
+		} else {
+			err = fmt.Errorf("нет TTS-клиента (выбери голос или F5)")
+		}
 		if err != nil {
 			log.Printf("[pipeline] tts error: %v", err)
 			p.sendStatus("error", "TTS: "+err.Error())
@@ -407,7 +453,6 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 		}
 		log.Printf("[pipeline] tts: %d bytes audio", len(audioData))
 
-		// 4. Воспроизведение
 		p.sendStatus("playing", "Playing...")
 		if err := p.playAudio(audioData); err != nil {
 			log.Printf("[pipeline] playback error: %v", err)

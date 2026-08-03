@@ -16,8 +16,8 @@ import (
 func main() {
 	go func() {
 		w := new(app.Window)
-		w.Option(app.Title("mono-go — Real-time Translator [tx-fix]"))
-		w.Option(app.Size(unit.Dp(720), unit.Dp(680)))
+		w.Option(app.Title("mono-go"))
+		w.Option(app.Size(unit.Dp(760), unit.Dp(720)))
 
 		theme := newTheme()
 		app := newApp(theme)

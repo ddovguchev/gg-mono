@@ -15,20 +15,31 @@ import (
 	"github.com/ddouhushau/go-transcoder/internal/audio"
 	"github.com/ddouhushau/go-transcoder/internal/config"
 	"github.com/ddouhushau/go-transcoder/internal/pipeline"
+	"github.com/ddouhushau/go-transcoder/internal/services"
+	"github.com/ddouhushau/go-transcoder/internal/tunnel"
 )
 
 type App struct {
-	th *material.Theme
+	th  *material.Theme
+	win *app.Window
 
 	state *AppState
 	cfg   *config.Settings
 	pipe  *pipeline.Pipeline
 
+	fish    *services.FishClient
+	fishTun *tunnel.SSHTunnel
+	voice   *voiceUI
+
 	startBtn  *widget.Clickable
 	configBtn *widget.Clickable
 	saveBtn   *widget.Clickable
+	navTranslate *widget.Clickable
+	navVoices    *widget.Clickable
+	navAdd       *widget.Clickable
 	micDrop   *dropdown
 	langDrop  *dropdown
+	voiceDrop *dropdown
 	txList    widget.List
 	voiceBtn  widget.Bool // 🔊 Voice — проигрывать перевод голосом
 
@@ -48,7 +59,9 @@ type AppState struct {
 	selectedMic  int
 	langDevices  []string
 	selectedLang int
+	selectedVoice int
 
+	screen     screen
 	recording  bool
 	showConfig bool
 	status     string
@@ -79,14 +92,18 @@ func newApp(th *material.Theme) *App {
 	}
 
 	a := &App{
-		th:        th,
-		state:     state,
-		cfg:       cfg,
-		startBtn:  new(widget.Clickable),
-		configBtn: new(widget.Clickable),
-		saveBtn:   new(widget.Clickable),
-		micDrop:   newDropdown("Microphone", micDevices, &state.selectedMic),
-		langDrop:  newDropdown("Translate to", langDevices, &state.selectedLang),
+		th:           th,
+		state:        state,
+		cfg:          cfg,
+		startBtn:     new(widget.Clickable),
+		configBtn:    new(widget.Clickable),
+		saveBtn:      new(widget.Clickable),
+		navTranslate: new(widget.Clickable),
+		navVoices:    new(widget.Clickable),
+		navAdd:       new(widget.Clickable),
+		micDrop:      newDropdown("Microphone", micDevices, &state.selectedMic),
+		langDrop:     newDropdown("Translate to", langDevices, &state.selectedLang),
+		voiceDrop:    newDropdown("Голос", []string{"— нет голосов —"}, &state.selectedVoice),
 	}
 	a.txList.Axis = layout.Vertical
 
@@ -94,6 +111,8 @@ func newApp(th *material.Theme) *App {
 	setSingleLine(&a.ollamaEdit, cfg.OllamaModel)
 	setSingleLine(&a.ttsModelEdit, cfg.TTSModel)
 	a.voiceBtn.Value = cfg.VoiceEnabled
+	a.initVoiceUI()
+	a.refreshVoicesAsync()
 
 	return a
 }
@@ -143,12 +162,16 @@ func enumerateInputDevices() []string {
 // ─── Event Loop ────────────────────────────────────────────────────
 
 func (a *App) run(w *app.Window) {
+	a.win = w
 	var ops op.Ops
 	for {
 		switch e := w.Event().(type) {
 		case app.DestroyEvent:
 			if a.pipe != nil {
 				a.pipe.Stop()
+			}
+			if a.fishTun != nil {
+				a.fishTun.Close()
 			}
 			os.Exit(0)
 		case app.FrameEvent:
@@ -169,15 +192,37 @@ func (a *App) run(w *app.Window) {
 // ─── Clicks ────────────────────────────────────────────────────────
 
 func (a *App) handleClicks(gtx layout.Context) {
+	if a.navTranslate.Clicked(gtx) {
+		a.state.screen = screenTranslate
+		a.refreshVoicesAsync()
+	}
+	if a.navVoices.Clicked(gtx) {
+		a.state.screen = screenVoices
+		a.state.showConfig = false
+		a.refreshVoicesAsync()
+	}
+	if a.navAdd.Clicked(gtx) {
+		a.state.screen = screenVoiceAdd
+		a.state.showConfig = false
+	}
+
+	a.handleVoiceClicks(gtx)
+
+	if a.state.screen != screenTranslate {
+		return
+	}
+
 	if a.startBtn.Clicked(gtx) {
 		a.toggleRecording()
 		a.micDrop.open = false
 		a.langDrop.open = false
+		a.voiceDrop.open = false
 	}
 
 	if a.configBtn.Clicked(gtx) {
 		a.micDrop.open = false
 		a.langDrop.open = false
+		a.voiceDrop.open = false
 		a.state.mu.Lock()
 		a.state.showConfig = !a.state.showConfig
 		if a.state.showConfig {
@@ -190,6 +235,13 @@ func (a *App) handleClicks(gtx layout.Context) {
 
 	a.micDrop.update(gtx)
 	a.langDrop.update(gtx)
+	if a.voiceDrop.update(gtx) {
+		a.applyVoiceDropdownSelection()
+	}
+	if a.voiceBtn.Update(gtx) {
+		a.cfg.VoiceEnabled = a.voiceBtn.Value
+		_ = config.Save(a.cfg)
+	}
 
 	if a.saveBtn.Clicked(gtx) {
 		a.applyConfig()
@@ -234,11 +286,20 @@ func (a *App) toggleRecording() {
 		SourceLang:  a.cfg.SourceLang,
 		VoiceEnabled: a.voiceBtn.Value,
 
+		FishBaseURL: a.cfg.FishBaseURL,
+		FishAPIKey:  a.cfg.FishAPIKey,
+		FishVoiceID: a.cfg.FishVoiceID,
+
 		// Сервисы на сервере закрыты файрволом → доступ только через SSH-туннель.
 		SSHHost:    a.cfg.ServerHost,
 		SSHUser:    a.cfg.SSHUser,
 		SSHPort:    a.cfg.SSHPort,
 		SSHKeyPath: a.cfg.SSHKeyPath,
+	}
+
+	// Fish TTS нужен туннель — поднимаем заранее (если ещё нет).
+	if cfg.VoiceEnabled && strings.TrimSpace(cfg.FishVoiceID) != "" {
+		_ = a.ensureFish()
 	}
 
 	p := pipeline.New(cfg)
@@ -348,6 +409,7 @@ func (a *App) applyConfig() {
 	a.cfg.OllamaModel = trimOr(a.ollamaEdit.Text(), "llama3")
 	a.cfg.TTSModel = trimOr(a.ttsModelEdit.Text(), "f5-tts")
 	a.cfg.TargetLang = a.state.langDevices[a.state.selectedLang]
+	a.cfg.VoiceEnabled = a.voiceBtn.Value
 
 	_ = config.Save(a.cfg)
 

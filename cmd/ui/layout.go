@@ -3,7 +3,7 @@ package main
 import (
 	"image"
 	"image/color"
-	"strconv"
+	"strings"
 
 	"gioui.org/layout"
 	"gioui.org/op/clip"
@@ -45,22 +45,14 @@ func (a *App) renderHeader(gtx layout.Context) layout.Dimensions {
 				title.Color = ink
 				return title.Layout(gtx)
 			}),
-			rigidPad(unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
-				a.state.mu.Lock()
-				n := 0
-				for _, ln := range a.state.transcript {
-					if ln.Source != "" || ln.Target != "" {
-						n++
-					}
-				}
-				a.state.mu.Unlock()
-				meta := material.Caption(a.th, "transcript lines: "+strconv.Itoa(n))
-				meta.Color = accent
-				return meta.Layout(gtx)
-			}),
-			rigidPad(unit.Dp(16), func(gtx layout.Context) layout.Dimensions {
+			rigidPad(unit.Dp(8), a.renderNav),
+			rigidPad(unit.Dp(8), func(gtx layout.Context) layout.Dimensions {
 				sub := material.Body1(a.th, "Real-time Voice Translator")
 				sub.Color = muted
+				if a.state.screen == screenVoices || a.state.screen == screenVoiceAdd {
+					sub = material.Body1(a.th, "Fish Speech — голоса")
+					sub.Color = muted
+				}
 				return sub.Layout(gtx)
 			}),
 		)
@@ -69,23 +61,34 @@ func (a *App) renderHeader(gtx layout.Context) layout.Dimensions {
 
 func (a *App) renderBody(gtx layout.Context) layout.Dimensions {
 	return layout.Inset{Left: unit.Dp(32), Right: unit.Dp(32), Bottom: unit.Dp(20)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		children := []layout.FlexChild{
-			layout.Rigid(a.renderControls),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-			layout.Rigid(a.renderStatus),
+		switch a.state.screen {
+		case screenVoices:
+			return a.renderVoicesScreen(gtx)
+		case screenVoiceAdd:
+			return a.renderVoiceAddScreen(gtx)
+		default:
+			return a.renderTranslateBody(gtx)
 		}
-		if a.state.showConfig {
-			children = append(children,
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-				layout.Rigid(a.renderConfigPanel),
-			)
-		}
+	})
+}
+
+func (a *App) renderTranslateBody(gtx layout.Context) layout.Dimensions {
+	children := []layout.FlexChild{
+		layout.Rigid(a.renderControls),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+		layout.Rigid(a.renderStatus),
+	}
+	if a.state.showConfig {
 		children = append(children,
 			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-			layout.Flexed(1, a.renderTranscript),
+			layout.Rigid(a.renderConfigPanel),
 		)
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
-	})
+	}
+	children = append(children,
+		layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+		layout.Flexed(1, a.renderTranscript),
+	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 func (a *App) renderControls(gtx layout.Context) layout.Dimensions {
@@ -98,8 +101,13 @@ func (a *App) renderControls(gtx layout.Context) layout.Dimensions {
 					})
 				}),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return a.renderDropdown(gtx, a.langDrop)
+					})
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return a.renderDropdown(gtx, a.voiceDrop)
 					})
 				}),
 			)
@@ -142,6 +150,10 @@ func (a *App) renderControls(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) renderStatus(gtx layout.Context) layout.Dimensions {
+	ttsLabel := a.cfg.TTSEndpoint()
+	if id := strings.TrimSpace(a.cfg.FishVoiceID); id != "" {
+		ttsLabel = "Fish · " + id
+	}
 	return card(gtx, bg1, unit.Dp(10), layout.Inset{
 		Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(14), Right: unit.Dp(14),
 	}, func(gtx layout.Context) layout.Dimensions {
@@ -150,7 +162,7 @@ func (a *App) renderStatus(gtx layout.Context) layout.Dimensions {
 			statusRow(a.th, "Server", a.cfg.ServerHost, a.configBtn),
 			statusRow(a.th, "Whisper", a.cfg.WhisperURL(), nil),
 			statusRow(a.th, "Ollama", a.cfg.OllamaModel, nil),
-			statusRow(a.th, "TTS", a.cfg.TTSEndpoint(), nil),
+			statusRow(a.th, "TTS", ttsLabel, nil),
 		)
 	})
 }
