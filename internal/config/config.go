@@ -19,6 +19,10 @@ type Settings struct {
 	SourceLang  string `json:"source_lang"`
 	TargetLang  string `json:"target_lang"`
 
+	// VoiceEnabled — проигрывать ли перевод голосом (TTS).
+	// Отключено — только субтитры: распознавание + перевод.
+	VoiceEnabled bool `json:"voice_enabled"`
+
 	// SSH-туннель к серверу. Если SSHUser пустой — прямое подключение.
 	SSHUser    string `json:"ssh_user"`
 	SSHPort    int    `json:"ssh_port"`
@@ -36,6 +40,7 @@ var defaults = Settings{
 	TargetLang:  "English",
 	MicDevice:   "default",
 	VirtualMic:  "default",
+	VoiceEnabled: false, // озвучка выключена по умолчанию — только субтитры
 	SSHUser:     "dd",
 	SSHPort:     22,
 }

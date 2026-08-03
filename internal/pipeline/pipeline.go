@@ -29,6 +29,7 @@ type Config struct {
 	VirtualMic  string
 	TargetLang  string
 	SourceLang  string
+	VoiceEnabled bool // false — только субтитры, без озвучки
 
 	// SSH-туннель. Если SSHHost непустой — сервисы доступны только
 	// через туннель (порты на сервере закрыты файрволом), поэтому
@@ -382,22 +383,26 @@ func (p *Pipeline) processPhrase(phrase []float32) {
 	log.Printf("[pipeline] translated: %q", translated)
 	p.sendText("translated", translated)
 
-	// 3. TTS: текст → аудио
-	p.sendStatus("synthesizing", "Synthesizing voice...")
-	audioData, err := p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
-	if err != nil {
-		log.Printf("[pipeline] tts error: %v", err)
-		p.sendStatus("error", "TTS: "+err.Error())
-		return
-	}
-	log.Printf("[pipeline] tts: %d bytes audio", len(audioData))
+	// Озвучка опциональна: пока она выключена, работаем только с субтитрами
+	// (распознавание + перевод), чтобы не бороться с эхом из колонок.
+	if p.cfg.VoiceEnabled {
+		// 3. TTS: текст → аудио
+		p.sendStatus("synthesizing", "Synthesizing voice...")
+		audioData, err := p.tts.Synthesize(translated, langCode(p.cfg.TargetLang))
+		if err != nil {
+			log.Printf("[pipeline] tts error: %v", err)
+			p.sendStatus("error", "TTS: "+err.Error())
+			return
+		}
+		log.Printf("[pipeline] tts: %d bytes audio", len(audioData))
 
-	// 4. Воспроизведение
-	p.sendStatus("playing", "Playing...")
-	if err := p.playAudio(audioData); err != nil {
-		log.Printf("[pipeline] playback error: %v", err)
-		p.sendStatus("error", "Playback: "+err.Error())
-		return
+		// 4. Воспроизведение
+		p.sendStatus("playing", "Playing...")
+		if err := p.playAudio(audioData); err != nil {
+			log.Printf("[pipeline] playback error: %v", err)
+			p.sendStatus("error", "Playback: "+err.Error())
+			return
+		}
 	}
 
 	elapsed := time.Since(start)

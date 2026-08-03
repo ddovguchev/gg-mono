@@ -128,6 +128,13 @@ func (a *App) renderControls(gtx layout.Context) layout.Dimensions {
 						}
 						return btn.Layout(gtx)
 					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Left: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							cb := material.CheckBox(a.th, &a.voiceBtn, "🔊 Voice")
+							cb.Color = muted
+							return cb.Layout(gtx)
+						})
+					}),
 				)
 			})
 		}),

@@ -30,6 +30,7 @@ type App struct {
 	micDrop   *dropdown
 	langDrop  *dropdown
 	txList    widget.List
+	voiceBtn  widget.Bool // 🔊 Voice — проигрывать перевод голосом
 
 	serverEdit   widget.Editor
 	ollamaEdit   widget.Editor
@@ -92,6 +93,7 @@ func newApp(th *material.Theme) *App {
 	setSingleLine(&a.serverEdit, cfg.ServerHost)
 	setSingleLine(&a.ollamaEdit, cfg.OllamaModel)
 	setSingleLine(&a.ttsModelEdit, cfg.TTSModel)
+	a.voiceBtn.Value = cfg.VoiceEnabled
 
 	return a
 }
@@ -230,6 +232,7 @@ func (a *App) toggleRecording() {
 		VirtualMic:  a.cfg.VirtualMic,
 		TargetLang:  lang,
 		SourceLang:  a.cfg.SourceLang,
+		VoiceEnabled: a.voiceBtn.Value,
 
 		// Сервисы на сервере закрыты файрволом → доступ только через SSH-туннель.
 		SSHHost:    a.cfg.ServerHost,
